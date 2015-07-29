@@ -15,8 +15,8 @@ writeSequence = True
 sampleRate = 44100
 tolerance = 0.8
 downsample = 1
-minOctave = 0
-maxOctave = 5
+minOctave = 1
+maxOctave = 6
 minNoteDuration = 10
 
 win_s = 4096 / downsample # fft size
