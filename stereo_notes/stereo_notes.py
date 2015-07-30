@@ -1,4 +1,4 @@
-from aubio import source, pitch, freqtomidi
+from aubio import freqtomidi
 import csv
 import os
 import sys
@@ -16,27 +16,25 @@ instrumentDir = "instruments/"
 writeNotes = True
 writeSequence = True
 
-sampleRate = 44100
-tolerance = 0.8
-downsample = 1
-minNoteDuration = 1
+minNoteDuration = 100
+pitchNoteThreshold = 10.0
 gain = 1.0
 
 minOctave = None
 maxOctave = None
 
-win_s = 4096 / downsample # fft size
-hop_s = 512 / downsample # hop size
-s = source(inputFile, sampleRate, hop_s)
-sampleRate = s.samplerate
-
-pitch_o = pitch("yin", win_s, hop_s, sampleRate)
-pitch_o.set_unit("freq")
-pitch_o.set_tolerance(tolerance)
-
 notes = []
 instruments = []
 sequence = []
+
+def mean(data):
+    if iter(data) is data:
+        data = list(data)
+    n = len(data)
+    if n < 1:
+        return 0
+    else:
+        return sum(data)/n
 
 # Convert midi to note
 def midi2note(midi):
@@ -49,30 +47,25 @@ def midi2note(midi):
     octave = midi / 12 - 1
     return [_valid_notenames[midi % 12], octave]
 
-# Total number of frames read
-total_frames = 0
-while True:
-    samples, read = s()
-    pitch = pitch_o(samples)[0]
-    #pitch = int(round(pitch))
-    confidence = pitch_o.get_confidence()
-    ms = int(round(total_frames / float(sampleRate) * 1000))
-    mid = 0
-    note = ['-', 0]
-    if confidence > 0 and pitch > 0:
-        mid = int(freqtomidi(pitch))
-        note = midi2note(mid)
-    notes.append({
-        'ms': ms,
-        'pitch': pitch,
-        'midi': mid,
-        'note': note[0],
-        'octave': note[1],
-        'note_octave': note[0] + str(note[1]),
-        'confidence': confidence
-    })
-    total_frames += read
-    if read < hop_s: break
+# Read sound data
+with open(inputFile, 'rb') as f:
+    r = csv.reader(f, delimiter=',')
+    for _s,_pitch in r:
+        ms = int(round(float(_s) * 1000))
+        pitch = float(_pitch)
+        mid = 0
+        note = ['-', 0]
+        if pitch > 0:
+            mid = int(freqtomidi(pitch))
+            note = midi2note(mid)
+        notes.append({
+            'ms': ms,
+            'pitch': pitch,
+            'midi': mid,
+            'note': note[0],
+            'octave': note[1],
+            'note_octave': note[0] + str(note[1])
+        })
 
 # Read instrument data
 with open(instrumentFile, 'rb') as f:
@@ -96,47 +89,69 @@ def selectInstrument(note_octave, duration):
     matches = [i for i in instruments if i['note_octave']==note_octave and i['duration'] < duration]
     return matches[-1]
 
-def addQueueToSequence(q):
-    global minNoteDuration
+# Add new sequence step
+def addToSequence(ms, duration, pitch):
     global sequence
-
-    n0 = q[0]
-    n1 = q[-1]
-    queue_duration = n1['ms']-n0['ms']
-    if queue_duration >= minNoteDuration and n0['note']!='-':
+    global minNoteDuration
+    global minOctave
+    global maxOctave
+    if duration >= minNoteDuration:
+        mid = int(freqtomidi(pitch))
+        note = midi2note(mid)
+        octave = note[1]
+        note = note[0]
+        octave = max([octave, minOctave])
+        octave = min([octave, maxOctave])
+        note_octave = note + str(octave)
         sequence.append({
-            'ms': n0['ms'],
-            'duration': queue_duration,
-            'note': n0['note'],
-            'octave': n0['octave'],
-            'instrument': selectInstrument(n0['note_octave'], queue_duration)
+            'elapsed_ms': ms,
+            'duration': duration,
+            'note': note,
+            'octave': octave,
+            'instrument': selectInstrument(note_octave, duration)
         })
 
 # Build sequence
-queue = []
+pitch_queue = []
+start_ms = 0
+start_pitch = 0
+ms = 0
 for n in notes:
-    if n['octave'] >= minOctave and n['octave'] <= maxOctave:
-        if len(queue) < 1 or queue[0]['note_octave']==n['note_octave']:
-            queue.append(n)
-        elif len(queue) > 0:
-            addQueueToSequence(queue)
-            queue = [n]
-    elif len(queue) > 0:
-        addQueueToSequence(queue)
-        queue = []
-if len(queue) > 0:
-    addQueueToSequence(queue)
+    ms = n['ms']
+    pitch = n['pitch']
+    # reached a pause, add previous note queue
+    if pitch <= 0 and len(pitch_queue) > 0:
+        addToSequence(start_ms, ms-start_ms, mean(pitch_queue))
+        pitch_queue = []
+    # reached a note threshold, add previous note queue
+    elif pitch > 0 and abs(pitch-start_pitch) > pitchNoteThreshold and (ms-start_ms) > minNoteDuration and len(pitch_queue) > 0:
+        addToSequence(start_ms, ms-start_ms, mean(pitch_queue))
+        pitch_queue = []
+    # add pitch to note queue
+    elif pitch > 0:
+        if len(pitch_queue) <= 0:
+            start_ms = ms
+            start_pitch = pitch
+        pitch_queue.append(pitch)
+if len(pitch_queue) > 0:
+    addToSequence(start_ms, ms-start_ms, mean(pitch_queue))
 
-total_ms = sequence[-1]['ms']
+total_ms = sequence[-1]['elapsed_ms']
 total_seconds = int(1.0*total_ms/1000)
 print('Main sequence time: '+time.strftime('%M:%S', time.gmtime(total_seconds)) + ' (' + str(total_seconds) + 's)')
+
+# Add milliseconds to sequence
+elapsed = 0
+for i, step in enumerate(sequence):
+	sequence[i]['ms'] = step['elapsed_ms'] - elapsed
+	elapsed = step['elapsed_ms']
 
 # Write notes to file
 if writeNotes:
     with open('output/'+inputFilename+'-notes.csv', 'wb') as f:
         w = csv.writer(f)
         for n in notes:
-            w.writerow([n['ms'], n['note'], n['octave'], n['confidence']])
+            w.writerow([n['ms'], n['note'], n['octave']])
         print('Successfully wrote '+str(len(notes))+' notes to log file')
 
 # Write sequence to file
@@ -145,7 +160,7 @@ if writeSequence:
     with open('output/'+inputFilename+'-sequence-readable.csv', 'wb') as f:
         w = csv.writer(f)
         for s in sequence:
-            w.writerow([s['ms'], s['duration'], s['note'], s['octave']])
+            w.writerow([s['elapsed_ms'], s['duration'], s['note'], s['octave']])
     # Write instruments
     with open('output/'+inputFilename+'-instruments.csv', 'wb') as f:
         w = csv.writer(f)

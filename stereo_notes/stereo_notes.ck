@@ -1,5 +1,5 @@
-2000 => int padding_start;
-2000 => int padding_end;
+0 => int padding_start;
+0 => int padding_end;
 2 => int instrument_buffers;
 0 => int start;
 me.dir() => string base_dir;
