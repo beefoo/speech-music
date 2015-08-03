@@ -11,8 +11,8 @@ if (base_dir.charAt(base_dir.length()-1) != '/')
 }
 
 // data files
-base_dir + "output/sample-instruments.csv" => string instruments_file;
-base_dir + "output/sample-sequence.csv" => string sequence_file;
+base_dir + "output/ck-instruments.csv" => string instruments_file;
+base_dir + "output/ck-sequence.csv" => string sequence_file;
 
 // instrument object
 class Instrument {
