@@ -1,6 +1,5 @@
-from aubio import freqtomidi
-import copy
 import csv
+import json
 import os
 import sys
 import time
@@ -13,6 +12,7 @@ inputFile = sys.argv[1]
 inputFilename = inputFile.split('/')[-1].split('.')[0]
 instrumentFile = "data/instruments.csv"
 instrumentDir = "instruments/"
+frequenciesFile = "data/frequencies.json"
 
 writeNotes = True
 writeSequence = True
@@ -53,16 +53,25 @@ def mean(data):
     else:
         return sum(data)/n
 
-# Convert midi to note
-def midi2note(midi):
-    if type(midi) != int:
-        raise TypeError, "an integer is required, got %s" % midi
-    midi = min(127, midi)
-    midi = max(0, midi)
-    midi = int(midi)
-    _valid_notenames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-    octave = midi / 12 - 1
-    return [_valid_notenames[midi % 12], octave]
+# get pitch data
+def getPitchData(pitch):
+    global frequencies
+    data = frequencies[0]
+    for i, f in enumerate(frequencies):
+        hz = float(f['hz'])
+        prev_hz = 0
+        if i > 0:
+            prev_hz = float(frequencies[i-1]['hz'])
+        if pitch < hz:
+            if prev_hz > 0 and abs(prev_hz-pitch) < abs(hz-pitch):
+                data = frequencies[i-1]
+            else:
+                data = f
+            break
+    return data
+
+# Get frequency table
+frequencies = json.load(open(frequenciesFile))
 
 # Read sound data
 with open(inputFile, 'rb') as f:
@@ -71,17 +80,20 @@ with open(inputFile, 'rb') as f:
         ms = int(round(float(_s) * 1000))
         pitch = float(_pitch)
         mid = 0
-        note = ['-', 0]
+        note = '-'
+        octave = 0
         if pitch > 0:
-            mid = int(freqtomidi(pitch))
-            note = midi2note(mid)
+            pdata = getPitchData(pitch)
+            mid = pdata['midi']
+            note = pdata['note']
+            octave = pdata['octave']
         notes.append({
             'ms': ms,
             'pitch': pitch,
             'midi': mid,
-            'note': note[0],
-            'octave': note[1],
-            'note_octave': note[0] + str(note[1])
+            'note': note,
+            'octave': octave,
+            'note_octave': note + str(octave)
         })
 
 # Read instrument data
@@ -127,10 +139,10 @@ def addToSequence(ms, duration, pitch):
     global minNoteDuration
     global instrumentTypes
     if duration >= minNoteDuration:
-        mid = int(freqtomidi(pitch))
-        note = midi2note(mid)
-        octave = note[1]
-        note = note[0]
+        pdata = getPitchData(pitch)
+        mid = pdata['midi']
+        note = pdata['note']
+        octave = pdata['octave']
         i = len(set([step['elapsed_ms'] for step in sequence if step['elapsed_ms'] < ms]))
         for instrumentType in instrumentTypes:
             selectedInstruments = selectInstrument(i, note, octave, duration, instrumentType)
