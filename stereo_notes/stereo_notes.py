@@ -18,6 +18,7 @@ writeNotes = True
 writeSequence = True
 
 minNoteDuration = 100
+minNoteDelay = 100
 pitchNoteThreshold = 10.0
 gain = 1.0
 
@@ -100,18 +101,19 @@ with open(inputFile, 'rb') as f:
 with open(instrumentFile, 'rb') as f:
     r = csv.reader(f, delimiter=',')
     next(r, None) # remove header
-    for file,note,octave,duration,instrumentType,mod,remainder in r:
-        instruments.append({
-            'index': len(instruments),
-            'file': instrumentDir + file,
-            'note': note,
-            'octave': int(octave),
-            'note_octave': note + octave,
-            'duration': int(duration),
-            'type': instrumentType,
-            'mod': int(mod),
-            'remainder': int(remainder)
-        })
+    for file,note,octave,duration,instrumentType,mod,remainder,active in r:
+        if int(active)>0:
+            instruments.append({
+                'index': len(instruments),
+                'file': instrumentDir + file,
+                'note': note,
+                'octave': int(octave),
+                'note_octave': note + octave,
+                'duration': int(duration),
+                'type': instrumentType,
+                'mod': int(mod),
+                'remainder': int(remainder)
+            })
     instruments = sorted(instruments, key=lambda k: k['duration'])
     instrumentTypes = set([i['type'] for i in instruments])
 
@@ -136,50 +138,60 @@ def selectInstrument(step, note, octave, duration, instrumentType):
 # Add new sequence step
 def addToSequence(ms, duration, pitch):
     global sequence
-    global minNoteDuration
     global instrumentTypes
-    if duration >= minNoteDuration:
-        pdata = getPitchData(pitch)
-        mid = pdata['midi']
-        note = pdata['note']
-        octave = pdata['octave']
-        i = len(set([step['elapsed_ms'] for step in sequence if step['elapsed_ms'] < ms]))
-        for instrumentType in instrumentTypes:
-            selectedInstruments = selectInstrument(i, note, octave, duration, instrumentType)
-            if len(selectedInstruments) > 0:
-                for instrument in selectedInstruments:
-                    sequence.append({
-                        'elapsed_ms': ms,
-                        'duration': duration,
-                        'note': note,
-                        'octave': octave,
-                        'instrument': instrument
-                    })
+    pdata = getPitchData(pitch)
+    mid = pdata['midi']
+    note = pdata['note']
+    octave = pdata['octave']
+    i = len(set([step['elapsed_ms'] for step in sequence if step['elapsed_ms'] < ms]))
+    for instrumentType in instrumentTypes:
+        selectedInstruments = selectInstrument(i, note, octave, duration, instrumentType)
+        if len(selectedInstruments) > 0:
+            for instrument in selectedInstruments:
+                sequence.append({
+                    'elapsed_ms': ms,
+                    'duration': duration,
+                    'note': note,
+                    'octave': octave,
+                    'instrument': instrument
+                })
 
 # Build sequence
 pitch_queue = []
 start_ms = 0
 start_pitch = 0
 ms = 0
+queue_duration = 0
+last_note_end = 0
 for n in notes:
     ms = n['ms']
     pitch = n['pitch']
+    queue_duration = ms-start_ms
     # reached a pause, add previous note queue
     if pitch <= 0 and len(pitch_queue) > 0:
-        addToSequence(start_ms, ms-start_ms, mean(pitch_queue))
+        if queue_duration >= minNoteDuration:
+            addToSequence(start_ms, queue_duration, mean(pitch_queue))
+            last_note_end = start_ms + queue_duration
         pitch_queue = []
     # reached a note threshold, add previous note queue
-    elif pitch > 0 and abs(pitch-start_pitch) > pitchNoteThreshold and (ms-start_ms) > minNoteDuration and len(pitch_queue) > 0:
-        addToSequence(start_ms, ms-start_ms, mean(pitch_queue))
+    elif pitch > 0 and abs(pitch-start_pitch) > pitchNoteThreshold and len(pitch_queue) > 0 and queue_duration >= minNoteDuration:
+        addToSequence(start_ms, queue_duration, mean(pitch_queue))
+        last_note_end = start_ms + queue_duration
         pitch_queue = []
+        if ms > last_note_end:
+            start_ms = ms
+            start_pitch = pitch
+            queue_duration = 0
+            pitch_queue.append(pitch)
     # add pitch to note queue
-    elif pitch > 0:
+    elif pitch > 0 and (ms - last_note_end) >= minNoteDelay:
         if len(pitch_queue) <= 0:
             start_ms = ms
             start_pitch = pitch
+            queue_duration = 0
         pitch_queue.append(pitch)
-if len(pitch_queue) > 0:
-    addToSequence(start_ms, ms-start_ms, mean(pitch_queue))
+if len(pitch_queue) > 0 and queue_duration > minNoteDuration:
+    addToSequence(start_ms, queue_duration, mean(pitch_queue))
 
 # Report on sequence time
 total_ms = sequence[-1]['elapsed_ms']
